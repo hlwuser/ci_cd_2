@@ -13,6 +13,7 @@ jobs:
       - name: install dependencies
         run: npm ci
   build:
+    needs: checkoutandsetup
     runs-on: ubuntu-latest
     steps:
       - name: test Check
