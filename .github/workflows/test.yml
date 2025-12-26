@@ -12,7 +12,7 @@ jobs:
           node-version: 20
       - name: install dependencies
         run: npm ci
-      - name: test check 
+      - name: test Check 
         run: npm test
       - name: build
-        run : npm build
+        run : npm run build
