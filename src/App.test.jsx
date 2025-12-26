@@ -5,7 +5,7 @@ import App from "./App";
 describe("Todo App", () => {
   it("renders the main heading", () => {
     render(<App />);
-    expect(screen.getByText("Todo App")).toBeInTheDocument();
+    expect(screen.getByText("coco App")).toBeInTheDocument();
   });
 
   it("adds a new todo", () => {
