@@ -1,22 +1,88 @@
-name: test
-on: push
+name: Deploy Vite React App
+
+on:
+  push:
+    branches:
+      - main  # Change to your default branch
+
 jobs:
-  checkoutandsetup:
-    runs-on: ubuntu-latest
+  deploy:
+    runs-on: self-hosted
+    
     steps:
-      - name: code clone
-        uses: actions/checkout@v2
-      - name: setup node js
-        uses: actions/setup-node@v6
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - name: install dependencies
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
         run: npm ci
-  build:
-    needs: checkoutandsetup
-    runs-on: ubuntu-latest
-    steps:
-      - name: test Check
-        run: npm test
-      - name: build
+
+      - name: Build project
         run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: Backup existing deployment
+        run: |
+          DEPLOY_DIR="/var/www/your-app"
+          if [ -d "$DEPLOY_DIR" ]; then
+            BACKUP_DIR="${DEPLOY_DIR}.backup.$(date +%Y%m%d_%H%M%S)"
+            echo "Creating backup at $BACKUP_DIR"
+            sudo cp -r "$DEPLOY_DIR" "$BACKUP_DIR"
+            
+            # Keep only last 5 backups
+            ls -dt ${DEPLOY_DIR}.backup.* | tail -n +6 | xargs -r sudo rm -rf
+          fi
+
+      - name: Deploy to server
+        run: |
+          DEPLOY_DIR="/var/www/your-app"
+          echo "Deploying to $DEPLOY_DIR"
+          
+          # Create directory if it doesn't exist
+          sudo mkdir -p "$DEPLOY_DIR"
+          
+          # Remove old files
+          sudo rm -rf "$DEPLOY_DIR"/*
+          
+          # Copy new build
+          sudo cp -r ./dist/* "$DEPLOY_DIR"/
+          
+          # Set proper permissions
+          sudo chown -R www-data:www-data "$DEPLOY_DIR"
+          sudo chmod -R 755 "$DEPLOY_DIR"
+
+      - name: Restart web server
+        run: |
+          echo "Reloading web server..."
+          sudo systemctl reload nginx
+          # For Apache use: sudo systemctl reload apache2
+
+      - name: Verify deployment
+        run: |
+          DEPLOY_DIR="/var/www/your-app"
+          if [ -f "$DEPLOY_DIR/index.html" ]; then
+            echo "✅ Deployment successful!"
+            echo "Files deployed:"
+            ls -lah "$DEPLOY_DIR"
+          else
+            echo "❌ Deployment failed - index.html not found"
+            exit 1
+          fi
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "=========================================="
+          echo "Deployment Summary"
+          echo "=========================================="
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Triggered by: ${{ github.actor }}"
+          echo "Status: ${{ job.status }}"
+          echo "=========================================="
