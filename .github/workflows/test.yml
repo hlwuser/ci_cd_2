@@ -57,12 +57,6 @@ jobs:
           sudo chown -R www-data:www-data "$DEPLOY_DIR"
           sudo chmod -R 755 "$DEPLOY_DIR"
 
-      - name: Restart web server
-        run: |
-          echo "Reloading web server..."
-          sudo systemctl reload nginx
-          # For Apache use: sudo systemctl reload apache2
-
       - name: Verify deployment
         run: |
           DEPLOY_DIR="/var/www/your-app"
