@@ -80,7 +80,7 @@ jobs:
           microk8s ctr image import /tmp/app-image-latest.tar
           rm /tmp/app-image-latest.tar
 
-      - name: Verify image in MIcroK8s
+      - name: Verify Image in MIcroK8s
         run: |
           echo "Images available in MicroK8s:"
           microk8s ctr images ls | grep ${{ env.IMAGE_NAME }}
