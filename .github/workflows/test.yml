@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run linter
+      - name: Run Linter
         run: npm run lint || echo "Linting step skipped"
         continue-on-error: true
 
