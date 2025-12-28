@@ -11,6 +11,7 @@ on:
 env:
   IMAGE_NAME: vite-react-app
   NAMESPACE: production
+  NODE_PORT: 30080
 
 jobs:
   test:
@@ -80,7 +81,7 @@ jobs:
           microk8s ctr image import /tmp/app-image-latest.tar
           rm /tmp/app-image-latest.tar
 
-      - name: Verify Image in MIcroK8s
+      - name: Verify Image in MicroK8s
         run: |
           echo "Images available in MicroK8s:"
           microk8s ctr images ls | grep ${{ env.IMAGE_NAME }}
@@ -102,6 +103,31 @@ jobs:
         run: |
           microk8s kubectl apply -f k8s/ --namespace=${{ env.NAMESPACE }}
 
+      - name: Configure external access
+        run: |
+          EXTERNAL_IP=$(curl -s ifconfig.me)
+          echo "External IP: $EXTERNAL_IP"
+          
+          # Update service with external IP
+          cat <<EOF | microk8s kubectl apply -f -
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: vite-react-app-service
+            namespace: ${{ env.NAMESPACE }}
+          spec:
+            type: NodePort
+            externalIPs:
+              - $EXTERNAL_IP
+            selector:
+              app: vite-react-app
+            ports:
+              - protocol: TCP
+                port: 80
+                targetPort: 80
+                nodePort: ${{ env.NODE_PORT }}
+          EOF
+
       - name: Wait for rollout
         run: |
           microk8s kubectl rollout status deployment/vite-react-app \
@@ -122,26 +148,30 @@ jobs:
       - name: Get service URL
         id: service-url
         run: |
-          NODE_PORT=$(microk8s kubectl get service vite-react-app-service -n ${{ env.NAMESPACE }} -o jsonpath='{.spec.ports[0].nodePort}')
-          NODE_IP=$(microk8s kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-          echo "url=http://$NODE_IP:$NODE_PORT" >> $GITHUB_OUTPUT
-          echo "Application URL: http://$NODE_IP:$NODE_PORT"
+          EXTERNAL_IP=$(curl -s ifconfig.me)
+          echo "url=http://$EXTERNAL_IP:${{ env.NODE_PORT }}" >> $GITHUB_OUTPUT
+          echo "Application URL: http://$EXTERNAL_IP:${{ env.NODE_PORT }}"
 
       - name: Deployment Summary
         run: |
-          NODE_PORT=$(microk8s kubectl get service vite-react-app-service -n ${{ env.NAMESPACE }} -o jsonpath='{.spec.ports[0].nodePort}')
-          NODE_IP=$(microk8s kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+          EXTERNAL_IP=$(curl -s ifconfig.me)
           
           echo "## Deployment Status :rocket:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Namespace:** ${{ env.NAMESPACE }}" >> $GITHUB_STEP_SUMMARY
           echo "**Image:** ${{ steps.image-tag.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "**URL:** http://$NODE_IP:$NODE_PORT" >> $GITHUB_STEP_SUMMARY
+          echo "**External URL:** http://$EXTERNAL_IP:${{ env.NODE_PORT }}" >> $GITHUB_STEP_SUMMARY
+          echo "**NodePort:** ${{ env.NODE_PORT }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Pods Status" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           microk8s kubectl get pods --namespace=${{ env.NAMESPACE }} >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Service Status" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          microk8s kubectl get svc --namespace=${{ env.NAMESPACE }} >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Cleanup old images
