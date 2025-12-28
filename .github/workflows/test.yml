@@ -11,7 +11,7 @@ on:
 env:
   IMAGE_NAME: vite-react-app
   NAMESPACE: production
-  NODE_PORT: 30080
+  EXTERNAL_PORT: 8080
 
 jobs:
   test:
@@ -103,12 +103,12 @@ jobs:
         run: |
           microk8s kubectl apply -f k8s/ --namespace=${{ env.NAMESPACE }}
 
-      - name: Configure external access
+      - name: Configure external access with LoadBalancer
         run: |
           EXTERNAL_IP=$(curl -s ifconfig.me)
           echo "External IP: $EXTERNAL_IP"
           
-          # Update service with external IP
+          # Create LoadBalancer service with external IP
           cat <<EOF | microk8s kubectl apply -f -
           apiVersion: v1
           kind: Service
@@ -116,16 +116,15 @@ jobs:
             name: vite-react-app-service
             namespace: ${{ env.NAMESPACE }}
           spec:
-            type: NodePort
+            type: LoadBalancer
             externalIPs:
               - $EXTERNAL_IP
             selector:
               app: vite-react-app
             ports:
               - protocol: TCP
-                port: 80
+                port: ${{ env.EXTERNAL_PORT }}
                 targetPort: 80
-                nodePort: ${{ env.NODE_PORT }}
           EOF
 
       - name: Wait for rollout
@@ -149,8 +148,8 @@ jobs:
         id: service-url
         run: |
           EXTERNAL_IP=$(curl -s ifconfig.me)
-          echo "url=http://$EXTERNAL_IP:${{ env.NODE_PORT }}" >> $GITHUB_OUTPUT
-          echo "Application URL: http://$EXTERNAL_IP:${{ env.NODE_PORT }}"
+          echo "url=http://$EXTERNAL_IP:${{ env.EXTERNAL_PORT }}" >> $GITHUB_OUTPUT
+          echo "Application URL: http://$EXTERNAL_IP:${{ env.EXTERNAL_PORT }}"
 
       - name: Deployment Summary
         run: |
@@ -161,8 +160,8 @@ jobs:
           echo "**Namespace:** ${{ env.NAMESPACE }}" >> $GITHUB_STEP_SUMMARY
           echo "**Image:** ${{ steps.image-tag.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "**External URL:** http://$EXTERNAL_IP:${{ env.NODE_PORT }}" >> $GITHUB_STEP_SUMMARY
-          echo "**NodePort:** ${{ env.NODE_PORT }}" >> $GITHUB_STEP_SUMMARY
+          echo "**External URL:** http://$EXTERNAL_IP:${{ env.EXTERNAL_PORT }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Port:** ${{ env.EXTERNAL_PORT }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Pods Status" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
