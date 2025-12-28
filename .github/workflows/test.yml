@@ -1,12 +1,20 @@
-name: Deploy Vite React App
+# .github/workflows/cicd-pipeline.yml
+name: Complete CI/CD Pipeline
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: vite-react-app
+  NAMESPACE: production
 
 jobs:
-  deploy:
+  test:
+    name: Run Tests
     runs-on: self-hosted
     
     steps:
@@ -16,57 +24,165 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build project
-        run: npm run build
-        env:
-          NODE_ENV: production
+      - name: Run linter
+        run: npm run lint || echo "Linting step skipped"
+        continue-on-error: true
 
-      - name: Backup existing deployment
-        run: |
-          DEPLOY_DIR="/var/www/your-app"
-          if [ -d "$DEPLOY_DIR" ]; then
-            BACKUP_DIR="${DEPLOY_DIR}.backup.$(date +%Y%m%d_%H%M%S)"
-            echo "Creating backup at $BACKUP_DIR"
-            sudo cp -r "$DEPLOY_DIR" "$BACKUP_DIR"
-            ls -dt ${DEPLOY_DIR}.backup.* | tail -n +6 | xargs -r sudo rm -rf
-          fi
+      - name: Run tests
+        run: npm test
 
-      - name: Deploy to server
+      - name: Generate coverage report
+        run: npm test -- --coverage
+        continue-on-error: true
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 30
+
+  build-and-deploy:
+    name: Build & Deploy to MicroK8s
+    runs-on: self-hosted
+    needs: test
+    if: github.event_name == 'push'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: image-tag
         run: |
-          DEPLOY_DIR="/var/www/your-app"
-          echo "Deploying to $DEPLOY_DIR"
-          sudo mkdir -p "$DEPLOY_DIR"
-          sudo rm -rf "$DEPLOY_DIR"/*
-          sudo cp -r ./dist/* "$DEPLOY_DIR"/
-          sudo chown -R www-data:www-data "$DEPLOY_DIR"
-          sudo chmod -R 755 "$DEPLOY_DIR"
+          TAG="${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Image tag: $TAG"
+
+      - name: Build Docker image in MicroK8s
+        run: |
+          # Build image with Docker and import to MicroK8s
+          docker build -t ${{ steps.image-tag.outputs.tag }} .
+          docker save ${{ steps.image-tag.outputs.tag }} > /tmp/app-image.tar
+          microk8s ctr image import /tmp/app-image.tar
+          rm /tmp/app-image.tar
+          
+          # Tag as latest
+          docker tag ${{ steps.image-tag.outputs.tag }} ${{ env.IMAGE_NAME }}:latest
+          docker save ${{ env.IMAGE_NAME }}:latest > /tmp/app-image-latest.tar
+          microk8s ctr image import /tmp/app-image-latest.tar
+          rm /tmp/app-image-latest.tar
+
+      - name: Verify image in MicroK8s
+        run: |
+          echo "Images available in MicroK8s:"
+          microk8s ctr images ls | grep ${{ env.IMAGE_NAME }}
+
+      - name: Setup kubectl
+        run: |
+          mkdir -p ~/.kube
+          microk8s config > ~/.kube/config
+
+      - name: Create namespace if not exists
+        run: |
+          microk8s kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | microk8s kubectl apply -f -
+
+      - name: Update deployment manifest with new image
+        run: |
+          sed -i "s|image:.*${{ env.IMAGE_NAME }}.*|image: ${{ steps.image-tag.outputs.tag }}|g" k8s/deployment.yaml
+
+      - name: Apply Kubernetes manifests
+        run: |
+          microk8s kubectl apply -f k8s/ --namespace=${{ env.NAMESPACE }}
+
+      - name: Wait for rollout
+        run: |
+          microk8s kubectl rollout status deployment/vite-react-app \
+            --namespace=${{ env.NAMESPACE }} \
+            --timeout=5m
 
       - name: Verify deployment
         run: |
-          DEPLOY_DIR="/var/www/your-app"
-          if [ -f "$DEPLOY_DIR/index.html" ]; then
-            echo "✅ Deployment successful!"
-            echo "Files deployed:"
-            ls -lah "$DEPLOY_DIR"
-          else
-            echo "❌ Deployment failed - index.html not found"
-            exit 1
-          fi
+          echo "Pods:"
+          microk8s kubectl get pods --namespace=${{ env.NAMESPACE }}
+          echo ""
+          echo "Services:"
+          microk8s kubectl get services --namespace=${{ env.NAMESPACE }}
+          echo ""
+          echo "Deployment:"
+          microk8s kubectl get deployment --namespace=${{ env.NAMESPACE }}
 
-      - name: Deployment summary
-        if: always()
+      - name: Get service URL
+        id: service-url
         run: |
-          echo "=========================================="
-          echo "Deployment Summary"
-          echo "=========================================="
-          echo "Branch: ${{ github.ref_name }}"
-          echo "Commit: ${{ github.sha }}"
-          echo "Triggered by: ${{ github.actor }}"
-          echo "Status: ${{ job.status }}"
-          echo "=========================================="
+          NODE_PORT=$(microk8s kubectl get service vite-react-app-service -n ${{ env.NAMESPACE }} -o jsonpath='{.spec.ports[0].nodePort}')
+          NODE_IP=$(microk8s kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+          echo "url=http://$NODE_IP:$NODE_PORT" >> $GITHUB_OUTPUT
+          echo "Application URL: http://$NODE_IP:$NODE_PORT"
+
+      - name: Deployment Summary
+        run: |
+          NODE_PORT=$(microk8s kubectl get service vite-react-app-service -n ${{ env.NAMESPACE }} -o jsonpath='{.spec.ports[0].nodePort}')
+          NODE_IP=$(microk8s kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+          
+          echo "## Deployment Status :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Namespace:** ${{ env.NAMESPACE }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ steps.image-tag.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** http://$NODE_IP:$NODE_PORT" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Pods Status" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          microk8s kubectl get pods --namespace=${{ env.NAMESPACE }} >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup old images
+        run: |
+          # Keep only the last 5 images
+          microk8s ctr images ls | grep ${{ env.IMAGE_NAME }} | grep -v latest | awk '{print $1}' | sort -r | tail -n +6 | xargs -r microk8s ctr images rm || true
+
+  rollback:
+    name: Rollback on Failure
+    runs-on: self-hosted
+    needs: build-and-deploy
+    if: failure()
+    
+    steps:
+      - name: Setup kubectl
+        run: |
+          mkdir -p ~/.kube
+          microk8s config > ~/.kube/config
+
+      - name: Rollback deployment
+        run: |
+          microk8s kubectl rollout undo deployment/vite-react-app \
+            --namespace=${{ env.NAMESPACE }}
+          
+      - name: Wait for rollback
+        run: |
+          microk8s kubectl rollout status deployment/vite-react-app \
+            --namespace=${{ env.NAMESPACE }} \
+            --timeout=3m
+
+      - name: Verify rollback
+        run: |
+          microk8s kubectl get pods --namespace=${{ env.NAMESPACE }}
+
+      - name: Rollback Summary
+        run: |
+          echo "## Rollback Completed :warning:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Deployment has been rolled back to previous version" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Current Pods" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          microk8s kubectl get pods --namespace=${{ env.NAMESPACE }} >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
